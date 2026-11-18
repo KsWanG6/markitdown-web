@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MarkItDown 線上轉換器</title>
+<style>
+:root{--bg:#f7f7f8;--fg:#1d1d1f;--card:#fff;--bd:#d8d8de;--ac:#2563eb;--mut:#6b7280}
+@media (prefers-color-scheme:dark){:root{--bg:#111214;--fg:#eee;--card:#1b1c1f;--bd:#33353a;--ac:#60a5fa;--mut:#9ca3af}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,"Noto Sans TC",sans-serif}
+main{max-width:900px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px}.sub{color:var(--mut);margin:0 0 20px}
+#drop{border:2px dashed var(--bd);border-radius:12px;background:var(--card);padding:40px 16px;text-align:center;cursor:pointer}
+#drop.over{border-color:var(--ac)}
+#status{margin:12px 0;color:var(--mut);font-size:14px;min-height:1.4em}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+button.sec{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
+textarea{width:100%;height:420px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);padding:12px;font:13px/1.5 ui-monospace,Consolas,monospace;resize:vertical}
+.priv{font-size:14px;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px 14px}
+footer{margin-top:24px;color:var(--mut);font-size:13px}
+a{color:var(--ac)}
+</style>
+</head>
+<body>
+<main>
+<h1>MarkItDown 線上轉換器</h1>
+<p class="sub">將 PDF、Word、PowerPoint、Excel、HTML、CSV、JSON、XML 等檔案轉成 Markdown。</p>
+<p class="priv">🔒 使用 WebAssembly（Pyodide）技術，檔案轉換完全在您的瀏覽器中進行，不會上傳至任何伺服器。</p>
+<div id="status">正在載入轉換引擎…（首次約需 10–30 秒，之後會有快取）</div>
+<div id="drop" tabindex="0">拖放檔案到這裡，或點擊選擇檔案<input id="file" type="file" hidden></div>
+<div class="row">
+  <button id="copy" class="sec" disabled>複製</button>
+  <button id="dl" disabled>下載 .md</button>
+</div>
+<textarea id="out" placeholder="轉換結果會顯示在這裡" readonly></textarea>
+<footer>基於 <a href="https://github.com/microsoft/markitdown">microsoft/markitdown</a>（MIT）。音訊、YouTube、圖片 OCR 等需網路或外部服務的功能在瀏覽器版不可用。</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const worker=new Worker('worker.js');
+let ready=false,name='output';
+worker.onmessage=e=>{
+  const m=e.data;
+  if(m.type==='status')$('status').textContent=m.text;
+  else if(m.type==='ready'){ready=true;$('status').textContent='✅ 引擎就緒，請選擇檔案。'}
+  else if(m.type==='result'){$('out').value=m.text;$('status').textContent='✅ 轉換完成';
+    $('copy').disabled=$('dl').disabled=false}
+  else if(m.type==='error'){$('status').textContent='❌ 轉換失敗';$('out').value=m.text}
+};
+async function handle(f){
+  if(!f)return;
+  if(!ready){$('status').textContent='引擎尚在載入，請稍候。';return}
+  name=f.name.replace(/\.[^.]+$/,'');
+  $('status').textContent='轉換中：'+f.name;
+  $('copy').disabled=$('dl').disabled=true;
+  worker.postMessage({type:'convert',name:f.name,buf:await f.arrayBuffer()});
+}
+const d=$('drop');
+d.onclick=()=>$('file').click();
+$('file').onchange=e=>{handle(e.target.files[0]);e.target.value=''};
+d.ondragover=e=>{e.preventDefault();d.classList.add('over')};
+d.ondragleave=()=>d.classList.remove('over');
+d.ondrop=e=>{e.preventDefault();d.classList.remove('over');handle(e.dataTransfer.files[0])};
+$('copy').onclick=async()=>{await navigator.clipboard.writeText($('out').value);$('status').textContent='已複製'};
+$('dl').onclick=()=>{const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([$('out').value],{type:'text/markdown'}));
+  a.download=name+'.md';a.click()};
+</script>
+</body>
+</html>
