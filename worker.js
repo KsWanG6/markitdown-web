@@ -53,8 +53,8 @@ onmessage = async e => {
     py.globals.set('fname', e.data.name);
     py.globals.set('fbytes', new Uint8Array(e.data.buf));
     const out = await py.runPythonAsync(CONVERT);
-    postMessage({type: 'result', text: out});
+    postMessage({type: 'result', id: e.data.id, text: out});
   } catch (err) {
-    postMessage({type: 'error', text: String(err)});
+    postMessage({type: 'error', id: e.data.id, text: String(err)});
   }
 };

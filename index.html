@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MarkItDown 線上轉換器</title>
 <style>
-:root{--bg:#f7f7f8;--fg:#1d1d1f;--card:#fff;--bd:#d8d8de;--ac:#2563eb;--mut:#6b7280}
-@media (prefers-color-scheme:dark){:root{--bg:#111214;--fg:#eee;--card:#1b1c1f;--bd:#33353a;--ac:#60a5fa;--mut:#9ca3af}}
+:root{--bg:#f7f7f8;--fg:#1d1d1f;--card:#fff;--bd:#d8d8de;--ac:#2563eb;--mut:#6b7280;--ok:#16a34a;--err:#dc2626}
+@media (prefers-color-scheme:dark){:root{--bg:#111214;--fg:#eee;--card:#1b1c1f;--bd:#33353a;--ac:#60a5fa;--mut:#9ca3af;--ok:#4ade80;--err:#f87171}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,"Noto Sans TC",sans-serif}
 main{max-width:900px;margin:0 auto;padding:24px 16px 48px}
@@ -17,10 +17,17 @@ h1{margin:0 0 4px}.sub{color:var(--mut);margin:0 0 20px}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer}
 button:disabled{opacity:.4;cursor:default}
-button.sec{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
-textarea{width:100%;height:420px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);padding:12px;font:13px/1.5 ui-monospace,Consolas,monospace;resize:vertical}
-button.tab{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
+button.sec,button.tab{background:var(--card);color:var(--fg);border:1px solid var(--bd)}
 button.tab.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+#list{list-style:none;margin:12px 0;padding:0;border:1px solid var(--bd);border-radius:8px;background:var(--card);max-height:240px;overflow:auto}
+#list:empty{display:none}
+#list li{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);cursor:pointer;font-size:14px}
+#list li:last-child{border-bottom:0}
+#list li.sel{background:color-mix(in srgb,var(--ac) 15%,transparent)}
+#list .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#list .ok{color:var(--ok)}#list .err{color:var(--err)}#list .wait,#list .run{color:var(--mut)}
+#list button{padding:2px 8px;font-size:12px}
+textarea{width:100%;height:420px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);padding:12px;font:13px/1.5 ui-monospace,Consolas,monospace;resize:vertical}
 #prev{min-height:420px;max-height:70vh;overflow:auto;border:1px solid var(--bd);border-radius:8px;background:var(--card);padding:12px 20px}
 #prev[hidden]{display:none}
 #prev img{max-width:100%}
@@ -37,16 +44,19 @@ a{color:var(--ac)}
 <body>
 <main>
 <h1>MarkItDown 線上轉換器</h1>
-<p class="sub">將 PDF、Word、PowerPoint、Excel、HTML、CSV、JSON、XML 等檔案轉成 Markdown。</p>
+<p class="sub">將 PDF、Word、PowerPoint、Excel、HTML、CSV、JSON、XML 等檔案轉成 Markdown，支援一次選擇多個檔案。</p>
 <p class="priv">🔒 使用 WebAssembly（Pyodide）技術，檔案轉換完全在您的瀏覽器中進行，不會上傳至任何伺服器。</p>
 <div id="status">正在載入轉換引擎…（首次約需 10–30 秒，之後會有快取）</div>
-<div id="drop" tabindex="0">拖放檔案到這裡，或點擊選擇檔案<input id="file" type="file" hidden></div>
+<div id="drop" tabindex="0">拖放檔案到這裡（可多個），或點擊選擇檔案<input id="file" type="file" multiple hidden></div>
+<ul id="list"></ul>
 <div class="row">
   <button id="tabSrc" class="tab on">原始碼</button>
   <button id="tabPrev" class="tab">預覽</button>
   <span style="flex:1"></span>
   <button id="copy" class="sec" disabled>複製</button>
-  <button id="dl" disabled>下載 .md</button>
+  <button id="dl" class="sec" disabled>下載 .md</button>
+  <button id="zip" disabled>全部下載 ZIP</button>
+  <button id="clr" class="sec" disabled>清除</button>
 </div>
 <textarea id="out" placeholder="轉換結果會顯示在這裡" readonly></textarea>
 <div id="prev" hidden></div>
@@ -54,49 +64,128 @@ a{color:var(--ac)}
 </main>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-function setView(preview){
-  $('tabSrc').classList.toggle('on',!preview);$('tabPrev').classList.toggle('on',preview);
-  $('out').hidden=preview;$('prev').hidden=!preview;
+const worker=new Worker('worker.js?v=3');
+let ready=false,seq=0,busy=false,sel=null,preview=false;
+const items=[]; // {id,name,status:'wait|run|ok|err',md}
+const ICON={wait:'⏳',run:'⚙️',ok:'✅',err:'❌'};
+
+const mdName=n=>n.replace(/\.[^.]+$/,'')+'.md';
+function save(name,blob){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000)}
+
+function renderList(){
+  const ul=$('list');ul.textContent='';
+  for(const it of items){
+    const li=document.createElement('li');
+    if(it===sel)li.className='sel';
+    const ic=document.createElement('span');ic.className=it.status;ic.textContent=ICON[it.status];
+    const nm=document.createElement('span');nm.className='nm';nm.textContent=it.name;nm.title=it.name;
+    li.append(ic,nm);
+    if(it.status==='ok'){
+      const b=document.createElement('button');b.className='sec';b.textContent='.md';
+      b.onclick=e=>{e.stopPropagation();save(mdName(it.name),new Blob([it.md],{type:'text/markdown'}))};
+      li.append(b);
+    }
+    li.onclick=()=>select(it);
+    ul.append(li);
+  }
+  const okN=items.filter(i=>i.status==='ok').length;
+  $('zip').disabled=okN<1;$('clr').disabled=!items.length;
+}
+function select(it){
+  sel=it;
+  $('out').value=it&&(it.status==='ok'||it.status==='err')?it.md:'';
+  if(it&&it.status==='run')$('out').value='轉換中…';
+  $('copy').disabled=$('dl').disabled=!(it&&it.status==='ok');
   if(preview)renderPreview();
+  renderList();
 }
 function renderPreview(){
   const md=$('out').value,p=$('prev');
   if(!md){p.textContent='尚無內容';return}
   if(window.marked&&window.DOMPurify)p.innerHTML=DOMPurify.sanitize(marked.parse(md));
-  else p.textContent=md; // CDN 載入失敗時退回純文字
+  else p.textContent=md;
+}
+function setView(p){
+  preview=p;
+  $('tabSrc').classList.toggle('on',!p);$('tabPrev').classList.toggle('on',p);
+  $('out').hidden=p;$('prev').hidden=!p;
+  if(p)renderPreview();
 }
 $('tabSrc').onclick=()=>setView(false);
 $('tabPrev').onclick=()=>setView(true);
-const worker=new Worker('worker.js');
-let ready=false,name='output';
+
+function updateStatus(){
+  const total=items.length,done=items.filter(i=>i.status==='ok'||i.status==='err').length;
+  if(!total)return;
+  const bad=items.filter(i=>i.status==='err').length;
+  $('status').textContent=done<total?`轉換中 ${done}/${total}…`:`✅ 完成 ${total-bad}/${total}`+(bad?`（${bad} 個失敗）`:'');
+}
+
+async function pump(){
+  if(busy||!ready)return;
+  const it=items.find(i=>i.status==='wait');
+  if(!it)return;
+  busy=true;it.status='run';
+  if(!sel)sel=it;
+  renderList();updateStatus();
+  it.id=++seq;
+  worker.postMessage({type:'convert',id:it.id,name:it.name,buf:await it.file.arrayBuffer()});
+}
+function finish(id,status,text){
+  const it=items.find(i=>i.id===id);
+  if(!it)return; // 已被清除
+  it.status=status;it.md=text;delete it.file;
+  busy=false;
+  if(sel===it||!sel)select(it);else renderList();
+  updateStatus();pump();
+}
+
 worker.onmessage=e=>{
   const m=e.data;
   if(m.type==='status')$('status').textContent=m.text;
-  else if(m.type==='ready'){ready=true;$('status').textContent='✅ 引擎就緒，請選擇檔案。'}
-  else if(m.type==='result'){$('out').value=m.text;$('status').textContent='✅ 轉換完成';if(!$('prev').hidden)renderPreview();
-    $('copy').disabled=$('dl').disabled=false}
-  else if(m.type==='error'){$('status').textContent='❌ 轉換失敗';$('out').value=m.text}
+  else if(m.type==='ready'){ready=true;$('status').textContent='✅ 引擎就緒，請選擇檔案。';pump()}
+  else if(m.type==='result')finish(m.id,'ok',m.text);
+  else if(m.type==='error'){
+    if(m.id==null)$('status').textContent='❌ '+m.text;
+    else finish(m.id,'err',m.text);
+  }
 };
-async function handle(f){
-  if(!f)return;
-  if(!ready){$('status').textContent='引擎尚在載入，請稍候。';return}
-  name=f.name.replace(/\.[^.]+$/,'');
-  $('status').textContent='轉換中：'+f.name;
-  $('copy').disabled=$('dl').disabled=true;
-  worker.postMessage({type:'convert',name:f.name,buf:await f.arrayBuffer()});
+
+function addFiles(files){
+  for(const f of files)items.push({name:f.name,status:'wait',md:'',file:f,id:0});
+  if(files.length&&!ready)$('status').textContent='已加入佇列，引擎載入完成後自動轉換。';
+  renderList();pump();
 }
+
 const d=$('drop');
 d.onclick=()=>$('file').click();
-$('file').onchange=e=>{handle(e.target.files[0]);e.target.value=''};
+$('file').onchange=e=>{addFiles([...e.target.files]);e.target.value=''};
 d.ondragover=e=>{e.preventDefault();d.classList.add('over')};
 d.ondragleave=()=>d.classList.remove('over');
-d.ondrop=e=>{e.preventDefault();d.classList.remove('over');handle(e.dataTransfer.files[0])};
+d.ondrop=e=>{e.preventDefault();d.classList.remove('over');addFiles([...e.dataTransfer.files])};
+
 $('copy').onclick=async()=>{await navigator.clipboard.writeText($('out').value);$('status').textContent='已複製'};
-$('dl').onclick=()=>{const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([$('out').value],{type:'text/markdown'}));
-  a.download=name+'.md';a.click()};
+$('dl').onclick=()=>{if(sel)save(mdName(sel.name),new Blob([sel.md],{type:'text/markdown'}))};
+$('zip').onclick=async()=>{
+  if(!window.JSZip){$('status').textContent='ZIP 函式庫載入失敗，請改用個別下載。';return}
+  const z=new JSZip(),used=new Set();
+  for(const it of items.filter(i=>i.status==='ok')){
+    let n=mdName(it.name),k=1;
+    while(used.has(n.toLowerCase()))n=mdName(it.name).replace(/\.md$/,`_${++k}.md`);
+    used.add(n.toLowerCase());z.file(n,it.md);
+  }
+  save('markdown.zip',await z.generateAsync({type:'blob'}));
+};
+$('clr').onclick=()=>{
+  // 轉換中的項目於結果回來時會被忽略；busy 在其回覆後才釋放
+  const running=items.find(i=>i.status==='run');
+  items.length=0;if(running)items.push(running);
+  sel=null;select(running||null);renderList();
+  if(!running)$('status').textContent='✅ 引擎就緒，請選擇檔案。';
+};
 </script>
 </body>
 </html>
